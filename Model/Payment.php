@@ -25,6 +25,8 @@ use Magento\Quote\Api\Data\CartInterface;
 use Magento\Sales\Model\Order;
 use Magento\Store\Model\ScopeInterface;
 use Zero\Checkout\Controller\Checkout\Placeorder;
+use Zero\Checkout\Model\Money\MinorUnits;
+use Zero\Checkout\Model\Money\RefundKey;
 
 /**
  * The Amazon Pay method of Zero Checkout. Placing the order creates an
@@ -42,8 +44,8 @@ class Payment extends AbstractMethod
     public const INTENT_CAPTURE = 'AuthorizeWithCapture';
     public const INTENT_AUTHORIZE = 'Authorize';
 
-    /** Currencies Amazon Pay settles without decimals. */
-    private const ZERO_DECIMAL = ['JPY'];
+    /** Amazon Pay's limit for x-amz-pay-idempotency-key (developer.amazon.com/docs/amazon-pay-api-v2/idempotency.html). */
+    private const IDEMPOTENCY_KEY_MAX = 32;
 
     /**
      * @var string
@@ -173,12 +175,29 @@ class Payment extends AbstractMethod
         $capture = $this->api->captureCharge(
             $chargeId,
             self::amount($order, (float) $amount * (float) ($order->getBaseToOrderRate() ?: 1)),
-            'zero-capture-' . $order->getIncrementId() . '-' . time(),
+            // An order is captured once: the same key for every try of it.
+            self::captureKey((string) $order->getIncrementId()),
             (int) $order->getStoreId()
         );
         $payment->setTransactionId((string) ($capture['chargeId'] ?? $chargeId))->setIsTransactionClosed(true);
 
         return $this;
+    }
+
+    /**
+     * The capture's idempotency key: "zero-capture-<increment id>", or, when
+     * that is longer than Amazon's limit, the prefix and a hash of it (the
+     * same for every try, like RefundKey).
+     */
+    public static function captureKey(string $incrementId): string
+    {
+        $prefix = 'zero-capture-';
+        $key = $prefix . $incrementId;
+        if (strlen($key) <= self::IDEMPOTENCY_KEY_MAX) {
+            return $key;
+        }
+
+        return $prefix . substr(sha1($key), 0, self::IDEMPOTENCY_KEY_MAX - strlen($prefix));
     }
 
     /**
@@ -198,7 +217,7 @@ class Payment extends AbstractMethod
         $refund = $this->api->createRefund(
             $chargeId,
             self::amount($order, (float) $amount * (float) ($order->getBaseToOrderRate() ?: 1)),
-            'zero-refund-' . $order->getIncrementId() . '-' . time(),
+            RefundKey::for($payment, (float) $amount, 'zero-', self::IDEMPOTENCY_KEY_MAX),
             (int) $order->getStoreId()
         );
         $payment->setTransactionId((string) ($refund['refundId'] ?? $chargeId . '-refund'))->setIsTransactionClosed(true);
@@ -268,7 +287,7 @@ class Payment extends AbstractMethod
         $currency = (string) $order->getOrderCurrencyCode();
 
         return [
-            'amount' => number_format($amount, in_array($currency, self::ZERO_DECIMAL, true) ? 0 : 2, '.', ''),
+            'amount' => MinorUnits::format($amount, $currency, MinorUnits::AMAZON),
             'currencyCode' => $currency,
         ];
     }

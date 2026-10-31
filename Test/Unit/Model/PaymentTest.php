@@ -11,6 +11,7 @@ namespace Zero\AmazonPay\Test\Unit\Model;
 use Magento\Sales\Model\Order;
 use Magento\Sales\Model\Order\Address;
 use Magento\Store\Model\Store;
+use PHPUnit\Framework\Attributes\DataProvider;
 use PHPUnit\Framework\TestCase;
 use Zero\AmazonPay\Model\Payment;
 
@@ -73,5 +74,44 @@ class PaymentTest extends TestCase
         $order->method('getStore')->willReturn($store);
 
         return $order;
+    }
+
+    /**
+     * An order is captured once: every try sends the same key (no time()),
+     * and it stays within Amazon's 32 characters (R8-9).
+     */
+    public function testCaptureKeyIsDeterministicAndBoundTo32Characters(): void
+    {
+        $this->assertSame('zero-capture-000000123', Payment::captureKey('000000123'));
+        $this->assertSame(Payment::captureKey('000000123'), Payment::captureKey('000000123'));
+        $this->assertSame('zero-capture-' . str_repeat('9', 19), Payment::captureKey(str_repeat('9', 19)));
+
+        $long = Payment::captureKey(str_repeat('9', 20));
+        $this->assertSame(32, strlen($long));
+        $this->assertSame('zero-capture-' . substr(sha1('zero-capture-' . str_repeat('9', 20)), 0, 19), $long);
+        $this->assertSame($long, Payment::captureKey(str_repeat('9', 20)));
+        $this->assertNotSame($long, Payment::captureKey(str_repeat('9', 21)));
+        $this->assertMatchesRegularExpression('/^[A-Za-z0-9_-]{1,32}$/', Payment::captureKey(str_repeat('x', 80)));
+    }
+
+    #[DataProvider('amounts')]
+    public function testAmountUnchanged(string $currency, float $amount, string $expected): void
+    {
+        $order = $this->createStub(Order::class);
+        $order->method('getOrderCurrencyCode')->willReturn($currency);
+
+        $this->assertSame(['amount' => $expected, 'currencyCode' => $currency], Payment::amount($order, $amount));
+    }
+
+    /** @return array<string, array{string, float, string}> */
+    public static function amounts(): array
+    {
+        return [
+            'EUR' => ['EUR', 10.5, '10.50'],
+            'USD' => ['USD', 0.1, '0.10'],
+            'GBP rounded' => ['GBP', 19.999, '20.00'],
+            'JPY whole' => ['JPY', 1000.0, '1000'],
+            'JPY rounded' => ['JPY', 1499.6, '1500'],
+        ];
     }
 }

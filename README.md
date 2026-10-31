@@ -74,6 +74,8 @@ order's currency must be one of its region's.
 - The checkout e2e (`checkout.spec.ts`) offers the method only where it is
   configured; a sandbox run needs Amazon's test buyer.
 
+What changed in each release: [CHANGELOG.md](CHANGELOG.md).
+
 ## License
 
 OSL-3.0 or AFL-3.0, your choice: see `NOTICE.md`.
